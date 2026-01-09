@@ -1,66 +1,73 @@
-import {
-  Schema,
-  model,
-  type Document,
-  type Model,
-  Types,
-} from "mongoose";
+import { Schema, model, models, type Model, type HydratedDocument, type Types } from 'mongoose';
+import { Event, type EventDocument } from './event.model';
 
-import { Event } from "./event.model";
-
-// Strongly typed Booking document interface
-export interface BookingDocument extends Document {
+// Public booking shape used in TypeScript
+export interface Booking {
   eventId: Types.ObjectId;
   email: string;
   createdAt: Date;
   updatedAt: Date;
 }
 
+// Mongoose-specific document type
+export type BookingDocument = HydratedDocument<Booking>;
+
+// Mongoose model type for Booking
 export type BookingModel = Model<BookingDocument>;
+
+// Simple email validator pattern (not exhaustive, but robust enough for most cases)
+const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const bookingSchema = new Schema<BookingDocument, BookingModel>(
   {
     eventId: {
       type: Schema.Types.ObjectId,
-      ref: "Event",
+      ref: 'Event',
       required: true,
+      index: true, // index on eventId to speed up event-centric queries
     },
     email: {
       type: String,
       required: true,
       trim: true,
       lowercase: true,
+      validate: {
+        validator: (value: string): boolean => emailPattern.test(value),
+        message: 'Email must be a valid email address.',
+      },
     },
   },
   {
-    timestamps: true,
-  }
+    timestamps: true, // automatically manage createdAt / updatedAt
+    strict: true,
+  },
 );
 
-// Index on eventId for faster booking lookups by event
-bookingSchema.index({ eventId: 1 });
+// Pre-save hook to ensure that the referenced event exists and email is valid
+bookingSchema.pre('save', async function preSave(next) {
+  const doc = this as BookingDocument;
 
-// Simple, pragmatic email validation pattern
-const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-// Pre-save hook: validate email and ensure referenced Event exists
-bookingSchema.pre("save", async function preSave(next) {
-  const normalizedEmail = (this.email ?? "").trim().toLowerCase();
-  if (!emailPattern.test(normalizedEmail)) {
-    return next(new Error("Email must be a valid email address."));
+  if (!doc.eventId) {
+    return next(new Error('eventId is required for a booking.'));
   }
-  this.email = normalizedEmail;
 
-  // Ensure the referenced event exists before saving the booking
-  const eventExists = await Event.exists({ _id: this.eventId });
+  // Verify that the referenced Event exists before creating the booking
+  const eventExists: Pick<EventDocument, '_id'> | null = await Event.exists({ _id: doc.eventId }).select('_id');
+
   if (!eventExists) {
-    return next(new Error("Booking must reference an existing event."));
+    return next(new Error('Cannot create booking: referenced event does not exist.'));
+  }
+
+  // Email is already validated via schema-level validator, but we guard again to fail fast
+  if (!emailPattern.test(doc.email)) {
+    return next(new Error('Email must be a valid email address.'));
   }
 
   next();
 });
 
-export const Booking = model<BookingDocument, BookingModel>(
-  "Booking",
-  bookingSchema
-);
+// Reuse existing model in hot-reload environments (Next.js dev)
+export const Booking =
+  (models.Booking as BookingModel) || model<BookingDocument, BookingModel>('Booking', bookingSchema);
+
+export default Booking;
