@@ -1,24 +1,24 @@
 import Image from "next/image";
 import Link from "next/link";
-import { StaticImageData } from "next/image";
 import pin from "../public/icons/pin.svg";
 import calender from "../public/icons/calendar.svg";
 import clock from "../public/icons/clock.svg";
 
 interface Props {
   title: string;
-  image: StaticImageData;
+  image: string; 
   slug: string;
   location: string;
   date: string;
   time: string;
 }
 
+
 const EventCard = ({ title, image, slug, location, date, time }: Props) => {
   return (
     <Link href={`/events/${slug}`} id="event-card">
-      <Image
-        src={image}
+      <img
+        src={image || "/placeholder.jpg"}
         alt={title}
         width={410}
         height={300}

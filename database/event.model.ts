@@ -1,7 +1,10 @@
 import { Schema, model, models, type Model, type HydratedDocument } from 'mongoose';
 
-// Public event shape used in TypeScript
+/* ================================
+   1. Public Event Shape (TypeScript)
+================================ */
 export interface Event {
+  id:number;
   title: string;
   slug: string;
   description: string;
@@ -9,8 +12,8 @@ export interface Event {
   image: string;
   venue: string;
   location: string;
-  date: string; // ISO-normalized date string (YYYY-MM-DD)
-  time: string; // Normalized 24h time string (HH:MM)
+  date: string; // YYYY-MM-DD
+  time: string; // HH:MM (24h)
   mode: string;
   audience: string;
   agenda: string[];
@@ -20,74 +23,89 @@ export interface Event {
   updatedAt: Date;
 }
 
-// Mongoose-specific document type
+
+/* ================================
+   2. Mongoose Types
+================================ */
 export type EventDocument = HydratedDocument<Event>;
+export type EventModelType = Model<EventDocument>;
 
-// Mongoose model type for better typing when using `EventModel`
-export type EventModel = Model<EventDocument>;
-
-// Basic slug generator to create URL-friendly slugs from titles
-const slugify = (value: string): string => {
-  return value
+/* ================================
+   3. Helpers
+================================ */
+const slugify = (value: string): string =>
+  value
     .toLowerCase()
     .trim()
-    .replace(/[^a-z0-9]+/g, '-') // replace non-alphanumerics with dashes
-    .replace(/^-+|-+$/g, ''); // trim leading/trailing dashes
-};
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 
-// Validate that a string is non-empty after trimming whitespace
-const isNonEmptyString = (value: unknown): value is string => {
-  return typeof value === 'string' && value.trim().length > 0;
-};
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0;
 
-const eventSchema = new Schema<EventDocument, EventModel>(
+/* ================================
+   4. Schema
+================================ */
+const eventSchema = new Schema<EventDocument, EventModelType>(
   {
     title: { type: String, required: true, trim: true },
-    slug: { type: String, required: true, unique: true, index: true },
+
+    // ⚠️ slug is GENERATED → NOT required
+    slug: { type: String},
+
     description: { type: String, required: true, trim: true },
     overview: { type: String, required: true, trim: true },
     image: { type: String, required: true, trim: true },
     venue: { type: String, required: true, trim: true },
     location: { type: String, required: true, trim: true },
-    date: { type: String, required: true },
-    time: { type: String, required: true },
+
+    date: { type: String, required: true }, // YYYY-MM-DD
+    time: { type: String, required: true }, // HH:MM
+
     mode: { type: String, required: true, trim: true },
     audience: { type: String, required: true, trim: true },
+
     agenda: {
       type: [String],
       required: true,
       validate: {
-        validator: (value: unknown[]): boolean =>
-          Array.isArray(value) && value.every((item) => isNonEmptyString(item)),
-        message: 'Agenda must be an array of non-empty strings.',
+        validator: (v: unknown[]) =>
+          Array.isArray(v) && v.every(isNonEmptyString),
+        message: 'Agenda must be an array of non-empty strings',
       },
     },
+
     organizer: { type: String, required: true, trim: true },
+
     tags: {
       type: [String],
       required: true,
       validate: {
-        validator: (value: unknown[]): boolean =>
-          Array.isArray(value) && value.every((item) => isNonEmptyString(item)),
-        message: 'Tags must be an array of non-empty strings.',
+        validator: (v: unknown[]) =>
+          Array.isArray(v) && v.every(isNonEmptyString),
+        message: 'Tags must be an array of non-empty strings',
       },
     },
   },
   {
-    timestamps: true, // automatically manage createdAt / updatedAt
+    timestamps: true,
     strict: true,
-  },
+  }
 );
 
-// Extra safety to enforce unique slugs at the database/index level
+/* ================================
+   5. Indexes
+================================ */
 eventSchema.index({ slug: 1 }, { unique: true });
 
-// Normalize and validate date/time & generate slug before saving
-eventSchema.pre('save', function preSave(next) {
+/* ================================
+   6. Pre-save Hook
+================================ */
+eventSchema.pre('save', function () {
   const doc = this as EventDocument;
 
-  // Validate presence of required string fields at runtime
-  const requiredStringFields: (keyof Event)[] = [
+  /* ---- Required string validation ---- */
+  const requiredFields: (keyof Event)[] = [
     'title',
     'description',
     'overview',
@@ -99,62 +117,51 @@ eventSchema.pre('save', function preSave(next) {
     'organizer',
   ];
 
-  for (const field of requiredStringFields) {
-    const value = doc[field];
-    if (!isNonEmptyString(value)) {
-      return next(new Error(`Field "${field}" is required and must be a non-empty string.`));
+  for (const field of requiredFields) {
+    if (!isNonEmptyString(doc[field])) {
+      throw new Error(`Field "${field}" is required and must be non-empty`);
     }
   }
 
-  // Generate or regenerate slug only when title has changed
-  if (doc.isModified('title') || !isNonEmptyString(doc.slug)) {
+  /* ---- Slug generation ---- */
+  if (!doc.slug || doc.isModified('title')) {
     doc.slug = slugify(doc.title);
   }
 
-  // Normalize the date into an ISO date-only string (YYYY-MM-DD)
+  /* ---- Date normalization ---- */
   if (doc.isModified('date')) {
-    const parsedDate = new Date(doc.date);
-    if (Number.isNaN(parsedDate.getTime())) {
-      return next(new Error('Invalid date format. Expected a parseable date string.'));
+    const parsed = new Date(doc.date);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new Error('Invalid date format');
     }
-
-    // ISO 8601 date-only (no time component)
-    const isoDateOnly = parsedDate.toISOString().slice(0, 10);
-    doc.date = isoDateOnly;
+    doc.date = parsed.toISOString().slice(0, 10);
   }
 
-  // Normalize time into 24h HH:MM format
+  /* ---- Time normalization ---- */
   if (doc.isModified('time')) {
-    const rawTime = doc.time.trim();
-
-    // Accepts formats like HH:MM, H:MM, HHMM, and normalizes to HH:MM (24h)
-    const match = rawTime.match(/^(\d{1,2})(?::?(\d{2}))$/);
+    const match = doc.time.trim().match(/^(\d{1,2}):?(\d{2})$/);
     if (!match) {
-      return next(
-        new Error(
-          'Invalid time format. Expected 24h time such as "HH:MM" or "H:MM".',
-        ),
-      );
+      throw new Error('Time must be in HH:MM (24h) format');
     }
 
-    const hours = Number.parseInt(match[1] ?? '', 10);
-    const minutes = Number.parseInt(match[2] ?? '0', 10);
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
 
-    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
-      return next(new Error('Time must be a valid 24h time between 00:00 and 23:59.'));
+    if (hours > 23 || minutes > 59) {
+      throw new Error('Invalid time value');
     }
 
-    const normalizedTime = `${hours.toString().padStart(2, '0')}:${minutes
+    doc.time = `${hours.toString().padStart(2, '0')}:${minutes
       .toString()
       .padStart(2, '0')}`;
-
-    doc.time = normalizedTime;
   }
-
-  next();
 });
 
-// Reuse existing model in hot-reload environments (Next.js dev) to avoid OverwriteModelError
-export const Event = (models.Event as EventModel) || model<EventDocument, EventModel>('Event', eventSchema);
+/* ================================
+   7. Model Export (Next.js Safe)
+================================ */
+export const Event =
+  (models.Event as EventModelType) ||
+  model<EventDocument, EventModelType>('Event', eventSchema);
 
 export default Event;
